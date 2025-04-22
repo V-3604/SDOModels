@@ -1,0 +1,71 @@
+# MSI-specific configuration for SDO model training
+
+# Dataset configuration
+data:
+  path: "/home/{username}/scratch/SDOModels/data/SDOBenchmark-data-full"
+  train_metadata: "/home/{username}/scratch/SDOModels/data/SDOBenchmark-data-full/training/meta_data.csv"
+  test_metadata: "/home/{username}/scratch/SDOModels/data/SDOBenchmark-data-full/test/meta_data.csv"
+  img_size: 128
+  batch_size: 64  # Optimized for A100/H100 GPUs
+  num_workers: 8
+  sample_type: "oversampled"
+  pin_memory: true
+
+# Model configuration
+model:
+  magnetogram_channels: 1
+  euv_channels: 8
+  pretrained: true
+  freeze_backbones: false
+  use_attention: true
+  fusion_method: "concat"
+  temporal_type: "lstm"
+  temporal_hidden_size: 512
+  temporal_num_layers: 2
+  dropout: 0.1
+  final_hidden_size: 512
+  use_uncertainty: true
+  use_multi_task: true
+
+# Loss configuration
+loss:
+  regression_weight: 1.0
+  c_vs_0_weight: 0.5
+  m_vs_c_weight: 0.5
+  m_vs_0_weight: 0.5
+  uncertainty_weight: 0.1
+  physics_reg_weight: 0.1
+  dynamic_weighting: true
+
+# Optimizer configuration
+optimizer:
+  name: "adamw"
+  lr: 5.0e-5
+  weight_decay: 0.001
+  scheduler: "cosine"
+  warmup_epochs: 5
+  t_0: 20
+  t_mult: 2
+  eta_min: 1.0e-7
+  gradient_clip_val: 1.0
+
+# Training configuration
+training:
+  max_epochs: 100
+  early_stopping_patience: 10
+  precision: 16  # Use mixed precision for faster training
+  accelerator: "gpu"
+  devices: 2  # Adjust based on available GPUs
+  strategy: "ddp"  # For multi-GPU training
+  log_every_n_steps: 10
+  deterministic: false
+  seed: 42
+  resume_from_checkpoint: null
+
+# Logging configuration
+logging:
+  log_dir: "logs"
+  tensorboard: true
+  save_top_k: 3
+  monitor: "val_loss"
+  mode: "min" 
