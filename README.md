@@ -130,6 +130,124 @@ The model expects SDO data in the following format:
 
 For optimal performance, the model should be trained on a GPU with at least 12GB of memory. The implementation includes mixed-precision training to optimize GPU memory usage.
 
+## Running on MSI (Minnesota Supercomputing Institute)
+
+This project supports running on MSI's high-performance computing resources, specifically optimized for their NVIDIA A100 GPUs.
+
+### MSI Setup
+
+1. **Accessing MSI**:
+   ```bash
+   ssh username@login.msi.umn.edu
+   ```
+   Note: You'll need to set up Duo 2FA for MSI access.
+
+2. **Environment Setup**:
+   ```bash
+   module load python3/3.9.3
+   module load cuda/11.3.0
+   module load pytorch/1.10.0
+   
+   # Or create a conda environment
+   module load conda
+   conda create -n sdoflare python=3.9 pytorch=1.10.0 cudatoolkit=11.3 -c pytorch
+   conda activate sdoflare
+   ```
+
+3. **Clone and Install**:
+   ```bash
+   cd /path/to/your/project/directory
+   git clone https://github.com/username/SDOModels.git
+   cd SDOModels
+   pip install -r requirements.txt
+   ```
+
+### SLURM Job Submission
+
+Create a SLURM job script (e.g., `train_model.sh`):
+
+```bash
+#!/bin/bash -l
+#SBATCH --job-name=sdo_flare
+#SBATCH --time=24:00:00
+#SBATCH --ntasks=1
+#SBATCH --mem=64G
+#SBATCH --tmp=10G
+#SBATCH --gres=gpu:a100:1
+#SBATCH --partition=a100
+#SBATCH -e %j.err
+#SBATCH -o %j.out
+
+cd /path/to/your/SDOModels
+
+module load python3/3.9.3
+module load cuda/11.3.0
+module load pytorch/1.10.0
+
+# Alternatively, if using conda:
+# module load conda
+# conda activate sdoflare
+
+# Run training
+python main.py train \
+  --data_path /path/to/sdo/data \
+  --batch_size 64 \
+  --mixed_precision \
+  --temporal_type lstm \
+  --experiment_name a100_training_run
+```
+
+Submit your job:
+```bash
+sbatch train_model.sh
+```
+
+### Multi-GPU Training
+
+For distributed training across multiple A100 GPUs, adjust your SLURM script:
+
+```bash
+#SBATCH --gres=gpu:a100:4  # Request 4 GPUs
+
+# Run with distributed training
+python -m torch.distributed.launch --nproc_per_node=4 main.py train \
+  --data_path /path/to/sdo/data \
+  --batch_size 32 \
+  --mixed_precision \
+  --distributed
+```
+
+### Monitoring Jobs
+
+Check job status:
+```bash
+squeue -u username
+```
+
+View job output in real-time:
+```bash
+tail -f jobid.out
+```
+
+Check GPU utilization:
+```bash
+srun --jobid=jobid --pty nvidia-smi
+```
+
+### Storage Considerations
+
+MSI has various storage options with different quotas and performance characteristics:
+- Home directory: Limited quota but backed up
+- Project space: Larger quota for shared work
+- Scratch space: Highest performance but no backup
+
+For large datasets, use:
+```bash
+# Add to your SLURM script
+cp -r /path/to/project/data $TMPDIR
+python main.py train --data_path $TMPDIR/data
+```
+
 ## Citation
 
 If you use this code or model in your research, please cite:

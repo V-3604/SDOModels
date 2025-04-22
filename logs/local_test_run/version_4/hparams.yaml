@@ -1,0 +1,42 @@
+data_config:
+  batch_size: 8
+  data_path: /Users/varshithgowdak/Desktop/SDOBenchmarkFiles/archive/SDOBenchmark_full
+  num_workers: 4
+  sample_type: oversampled
+loss_config:
+  c_vs_0_weight: 0.5
+  m_vs_0_weight: 0.5
+  m_vs_c_weight: 0.5
+  physics_reg_weight: 0.1
+  regression_weight: 1.0
+  spatial_order: 2
+  uncertainty_weight: 0.1
+  use_multi_task: true
+  use_physics_reg: true
+  use_uncertainty: true
+model_config:
+  dropout: 0.1
+  euv_channels: 8
+  final_hidden_size: 512
+  freeze_backbones: false
+  fusion_method: concat
+  magnetogram_channels: 1
+  pretrained: true
+  temporal_hidden_size: 512
+  temporal_num_layers: 2
+  temporal_type: lstm
+  use_attention: true
+  use_multi_task: true
+  use_uncertainty: true
+optimizer_config:
+  eta_min: 1.0e-07
+  factor: 0.5
+  lr: 1.0e-06
+  min_lr: 1.0e-07
+  patience: 5
+  scheduler: cosine
+  t_0: 10
+  t_mult: 2
+  use_warmup: true
+  warmup_epochs: 5
+  weight_decay: 0.01

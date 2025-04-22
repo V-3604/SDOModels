@@ -16,4 +16,7 @@ transformers>=4.21.0
 captum>=0.5.0
 shap>=0.41.0
 pyyaml>=6.0
+pyarrow>=8.0.0
+psutil>=5.9.0
+tensorboard>=2.8.0
 pathlib>=1.0.1 

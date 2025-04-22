@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, ReduceLROnPlateau, SequentialLR
 from torch.cuda.amp import GradScaler, autocast
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
@@ -29,13 +29,13 @@ class SolarFlareModule(pl.LightningModule):
                  optimizer_config: dict,
                  data_config: dict):
         """
-        Initialize lightning module
+        Initialize solar flare module
         
         Args:
-            model_config: Configuration for model architecture
-            loss_config: Configuration for loss function
-            optimizer_config: Configuration for optimizer
-            data_config: Configuration for data loading
+            model_config: Model configuration
+            loss_config: Loss function configuration
+            optimizer_config: Optimizer configuration
+            data_config: Data configuration
         """
         super().__init__()
         
@@ -45,18 +45,24 @@ class SolarFlareModule(pl.LightningModule):
         # Create model
         self.model = SolarFlareModel(**model_config)
         
-        # Create loss function
+        # Extract physics regularization parameters
+        physics_reg_weight = loss_config.pop('physics_reg_weight', 0.1)
+        use_physics_reg = loss_config.pop('use_physics_reg', True)
+        spatial_order = loss_config.pop('spatial_order', 2)
+        
+        # Create loss function with remaining parameters
         self.criterion = SolarFlareLoss(**loss_config)
         
         # Create physics-informed regularization
         self.physics_reg = PhysicsInformedRegularization(
-            weight=loss_config.get('physics_reg_weight', 0.1),
-            spatial_order=loss_config.get('spatial_order', 2)
+            weight=physics_reg_weight,
+            spatial_order=spatial_order
         )
         
         # Store configurations
         self.optimizer_config = optimizer_config
         self.data_config = data_config
+        self.use_physics_reg = use_physics_reg
         
         # Initialize metrics
         self.best_val_mae = float('inf')
@@ -145,7 +151,7 @@ class SolarFlareModule(pl.LightningModule):
                 
                 # Combined scheduler
                 scheduler = {
-                    'scheduler': pl.utilities.lr_scheduler.SequentialLR(
+                    'scheduler': SequentialLR(
                         optimizer, 
                         schedulers=[warmup_scheduler, main_scheduler],
                         milestones=[warmup_epochs]
@@ -190,7 +196,7 @@ class SolarFlareModule(pl.LightningModule):
                 
                 # Combined scheduler
                 scheduler = {
-                    'scheduler': pl.utilities.lr_scheduler.SequentialLR(
+                    'scheduler': SequentialLR(
                         optimizer, 
                         schedulers=[warmup_scheduler, main_scheduler],
                         milestones=[warmup_epochs]
@@ -261,7 +267,13 @@ class SolarFlareModule(pl.LightningModule):
         # Get inputs and targets
         magnetogram = batch['magnetogram']
         euv = batch['euv']
-        targets = batch['target']
+        
+        # Create targets dictionary from individual keys
+        targets = {
+            'peak_flux': batch['peak_flux'],
+            'is_c_flare': batch['is_c_flare'],
+            'is_m_flare': batch['is_m_flare'],
+        }
         
         # Forward pass
         predictions = self(magnetogram, euv)
@@ -270,7 +282,7 @@ class SolarFlareModule(pl.LightningModule):
         losses = self.criterion(predictions, targets)
         
         # Add physics-informed regularization if enabled
-        if self.hparams.loss_config.get('use_physics_reg', True):
+        if self.use_physics_reg:
             physics_loss = self.physics_reg(magnetogram, predictions)
             losses['physics_reg'] = physics_loss
             losses['total'] += physics_loss
@@ -310,8 +322,13 @@ class SolarFlareModule(pl.LightningModule):
         # Get inputs and targets
         magnetogram = batch['magnetogram']
         euv = batch['euv']
-        targets = batch['target']
-        metadata = batch['metadata']
+        
+        # Create targets dictionary from individual keys
+        targets = {
+            'peak_flux': batch['peak_flux'],
+            'is_c_flare': batch['is_c_flare'],
+            'is_m_flare': batch['is_m_flare'],
+        }
         
         # Forward pass
         predictions = self(magnetogram, euv)
@@ -320,7 +337,7 @@ class SolarFlareModule(pl.LightningModule):
         losses = self.criterion(predictions, targets)
         
         # Add physics-informed regularization if enabled
-        if self.hparams.loss_config.get('use_physics_reg', True):
+        if self.use_physics_reg:
             physics_loss = self.physics_reg(magnetogram, predictions)
             losses['physics_reg'] = physics_loss
             losses['total'] += physics_loss
@@ -338,8 +355,9 @@ class SolarFlareModule(pl.LightningModule):
         # Store predictions and targets for computing metrics at epoch end
         peak_flux_pred = predictions['peak_flux_mean'] if 'peak_flux_mean' in predictions else predictions['peak_flux']
         
-        # Return predictions and targets for epoch end validation metrics
-        return {
+        # Add predictions to validation step outputs
+        self.validation_step_outputs = getattr(self, 'validation_step_outputs', [])
+        self.validation_step_outputs.append({
             'peak_flux_pred': peak_flux_pred.detach().cpu(),
             'peak_flux_true': targets['peak_flux'].detach().cpu(),
             'c_vs_0_pred': predictions.get('c_vs_0', None),
@@ -348,7 +366,13 @@ class SolarFlareModule(pl.LightningModule):
             'm_vs_c_true': targets['is_m_flare'],
             'm_vs_0_pred': predictions.get('m_vs_0', None),
             'm_vs_0_true': targets['is_m_flare']
-        }
+        })
+        
+        return losses['total']
+    
+    def on_validation_epoch_start(self):
+        """Initialize validation step outputs list at the start of each validation epoch"""
+        self.validation_step_outputs = []
     
     def on_validation_epoch_end(self):
         """Process validation outputs at the end of an epoch"""
@@ -370,6 +394,178 @@ class SolarFlareModule(pl.LightningModule):
                     self.val_stable_iters = 0
                 
                 self.log('val_stability', self.val_stable_iters, prog_bar=True)
+                
+        # Process collected outputs
+        if hasattr(self, 'validation_step_outputs') and self.validation_step_outputs:
+            # Concatenate outputs from all validation batches
+            peak_flux_pred = torch.cat([x['peak_flux_pred'] for x in self.validation_step_outputs])
+            peak_flux_true = torch.cat([x['peak_flux_true'] for x in self.validation_step_outputs])
+            
+            # Compute MAE for regression
+            mae = mean_absolute_error(
+                peak_flux_true.numpy(),
+                peak_flux_pred.numpy()
+            )
+            
+            self.log('val/mae', mae, prog_bar=True, sync_dist=True)
+            
+            # Track best MAE
+            if mae < self.best_val_mae:
+                self.best_val_mae = mae
+                self.log('val/best_mae', self.best_val_mae, prog_bar=True, sync_dist=True)
+            
+            # Compute classification metrics if multi-task is enabled
+            if self.hparams.model_config.get('use_multi_task', True):
+                # C vs 0 classification
+                c_vs_0_pred = torch.cat([x['c_vs_0_pred'].detach().cpu() for x in self.validation_step_outputs])
+                c_vs_0_true = torch.cat([x['c_vs_0_true'].detach().cpu() for x in self.validation_step_outputs])
+                
+                # M vs 0 classification
+                m_vs_0_pred = torch.cat([x['m_vs_0_pred'].detach().cpu() for x in self.validation_step_outputs])
+                m_vs_0_true = torch.cat([x['m_vs_0_true'].detach().cpu() for x in self.validation_step_outputs])
+                
+                # Compute True Skill Statistic (TSS) for M vs 0
+                m_vs_0_pred_binary = (m_vs_0_pred > 0.5).float().numpy()
+                m_vs_0_true_binary = m_vs_0_true.numpy()
+                
+                tn, fp, fn, tp = confusion_matrix(
+                    m_vs_0_true_binary, 
+                    m_vs_0_pred_binary,
+                    labels=[0, 1]
+                ).ravel()
+                
+                sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+                specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+                tss = sensitivity + specificity - 1
+                
+                # Log metrics
+                self.log('val/m_vs_0_tss', tss, prog_bar=True, sync_dist=True)
+                
+                # Track best TSS
+                if tss > self.best_val_tss:
+                    self.best_val_tss = tss
+                    self.log('val/best_tss', self.best_val_tss, prog_bar=True, sync_dist=True)
+                
+                # Compute AUC-ROC scores
+                try:
+                    c_vs_0_auc = roc_auc_score(c_vs_0_true.numpy(), c_vs_0_pred.numpy())
+                    m_vs_0_auc = roc_auc_score(m_vs_0_true.numpy(), m_vs_0_pred.numpy())
+                    
+                    self.log('val/c_vs_0_auc', c_vs_0_auc, sync_dist=True)
+                    self.log('val/m_vs_0_auc', m_vs_0_auc, sync_dist=True)
+                except Exception as e:
+                    self.print(f"Error computing AUC: {e}")
+            
+            # Clear outputs to free memory
+            self.validation_step_outputs.clear()
+    
+    def test_step(self, batch, batch_idx):
+        """
+        Test step (similar to validation step)
+        
+        Args:
+            batch: Batch of data
+            batch_idx: Batch index
+            
+        Returns:
+            Dictionary of test metrics
+        """
+        # Handle NaN/Inf values in inputs
+        batch = self._handle_invalid_values(batch)
+        
+        # Get inputs and targets
+        magnetogram = batch['magnetogram']
+        euv = batch['euv']
+        
+        # Create targets dictionary from individual keys
+        targets = {
+            'peak_flux': batch['peak_flux'],
+            'is_c_flare': batch['is_c_flare'],
+            'is_m_flare': batch['is_m_flare'],
+        }
+        
+        # Forward pass
+        predictions = self(magnetogram, euv)
+        
+        # Compute loss
+        losses = self.criterion(predictions, targets)
+        
+        # Add physics-informed regularization if enabled
+        if self.use_physics_reg:
+            physics_loss = self.physics_reg(magnetogram, predictions)
+            losses['physics_reg'] = physics_loss
+            losses['total'] += physics_loss
+        
+        # Log losses
+        for loss_name, loss_value in losses.items():
+            self.log(f'test/{loss_name}', loss_value, prog_bar=loss_name=='total', sync_dist=True)
+        
+        # Store predictions and targets for computing metrics at epoch end
+        peak_flux_pred = predictions['peak_flux_mean'] if 'peak_flux_mean' in predictions else predictions['peak_flux']
+        
+        # Add predictions to test step outputs
+        self.test_step_outputs = getattr(self, 'test_step_outputs', [])
+        self.test_step_outputs.append({
+            'peak_flux_pred': peak_flux_pred.detach().cpu(),
+            'peak_flux_true': targets['peak_flux'].detach().cpu(),
+            'c_vs_0_pred': predictions.get('c_vs_0', None),
+            'c_vs_0_true': targets['is_c_flare'],
+            'm_vs_0_pred': predictions.get('m_vs_0', None),
+            'm_vs_0_true': targets['is_m_flare']
+        })
+        
+        return losses['total']
+    
+    def on_test_epoch_start(self):
+        """Initialize test step outputs list at the start of each test epoch"""
+        self.test_step_outputs = []
+    
+    def on_test_epoch_end(self):
+        """
+        Compute test metrics at the end of epoch
+        
+        Args:
+            outputs: List of outputs from test_step
+        """
+        # Process collected outputs
+        if hasattr(self, 'test_step_outputs') and self.test_step_outputs:
+            # Concatenate outputs from all test batches
+            peak_flux_pred = torch.cat([x['peak_flux_pred'] for x in self.test_step_outputs])
+            peak_flux_true = torch.cat([x['peak_flux_true'] for x in self.test_step_outputs])
+            
+            # Compute MAE for regression
+            mae = mean_absolute_error(
+                peak_flux_true.numpy(),
+                peak_flux_pred.numpy()
+            )
+            
+            self.log('test/mae', mae, prog_bar=True, sync_dist=True)
+            
+            # Compute classification metrics if multi-task is enabled
+            if self.hparams.model_config.get('use_multi_task', True):
+                # M vs 0 classification
+                m_vs_0_pred = torch.cat([x['m_vs_0_pred'].detach().cpu() for x in self.test_step_outputs])
+                m_vs_0_true = torch.cat([x['m_vs_0_true'].detach().cpu() for x in self.test_step_outputs])
+                
+                # Compute True Skill Statistic (TSS) for M vs 0
+                m_vs_0_pred_binary = (m_vs_0_pred > 0.5).float().numpy()
+                m_vs_0_true_binary = m_vs_0_true.numpy()
+                
+                tn, fp, fn, tp = confusion_matrix(
+                    m_vs_0_true_binary, 
+                    m_vs_0_pred_binary,
+                    labels=[0, 1]
+                ).ravel()
+                
+                sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+                specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+                tss = sensitivity + specificity - 1
+                
+                # Log metrics
+                self.log('test/m_vs_0_tss', tss, prog_bar=True, sync_dist=True)
+            
+            # Clear outputs to free memory
+            self.test_step_outputs.clear()
     
     def _handle_invalid_values(self, batch):
         """
@@ -386,103 +582,13 @@ class SolarFlareModule(pl.LightningModule):
                 # Replace NaN and Inf with zeros or reasonable values
                 batch[key] = torch.nan_to_num(batch[key], nan=0.0, posinf=1.0, neginf=-1.0)
         
-        if 'target' in batch:
-            for key in batch['target']:
-                batch['target'][key] = torch.nan_to_num(batch['target'][key], nan=0.0, posinf=1.0, neginf=0.0)
+        # Handle target values
+        for key in ['peak_flux', 'is_c_flare', 'is_m_flare']:
+            if key in batch:
+                batch[key] = torch.nan_to_num(batch[key], nan=0.0, posinf=1.0, neginf=0.0)
                 
         return batch
     
-    def validation_epoch_end(self, outputs):
-        """
-        Compute validation metrics at the end of epoch
-        
-        Args:
-            outputs: List of outputs from validation_step
-        """
-        # Concatenate outputs from all validation batches
-        peak_flux_pred = torch.cat([x['peak_flux_pred'] for x in outputs])
-        peak_flux_true = torch.cat([x['peak_flux_true'] for x in outputs])
-        
-        # Compute MAE for regression
-        mae = mean_absolute_error(
-            peak_flux_true.numpy(),
-            peak_flux_pred.numpy()
-        )
-        
-        self.log('val/mae', mae, prog_bar=True, sync_dist=True)
-        
-        # Track best MAE
-        if mae < self.best_val_mae:
-            self.best_val_mae = mae
-            self.log('val/best_mae', self.best_val_mae, prog_bar=True, sync_dist=True)
-        
-        # Compute classification metrics if multi-task is enabled
-        if self.hparams.model_config.get('use_multi_task', True):
-            # C vs 0 classification
-            c_vs_0_pred = torch.cat([x['c_vs_0_pred'].detach().cpu() for x in outputs])
-            c_vs_0_true = torch.cat([x['c_vs_0_true'].detach().cpu() for x in outputs])
-            
-            # M vs 0 classification
-            m_vs_0_pred = torch.cat([x['m_vs_0_pred'].detach().cpu() for x in outputs])
-            m_vs_0_true = torch.cat([x['m_vs_0_true'].detach().cpu() for x in outputs])
-            
-            # Compute True Skill Statistic (TSS) for M vs 0
-            m_vs_0_pred_binary = (m_vs_0_pred > 0.5).float().numpy()
-            m_vs_0_true_binary = m_vs_0_true.numpy()
-            
-            tn, fp, fn, tp = confusion_matrix(
-                m_vs_0_true_binary, 
-                m_vs_0_pred_binary,
-                labels=[0, 1]
-            ).ravel()
-            
-            sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
-            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-            tss = sensitivity + specificity - 1
-            
-            # Log metrics
-            self.log('val/m_vs_0_tss', tss, prog_bar=True, sync_dist=True)
-            
-            # Track best TSS
-            if tss > self.best_val_tss:
-                self.best_val_tss = tss
-                self.log('val/best_tss', self.best_val_tss, prog_bar=True, sync_dist=True)
-            
-            # Compute AUC-ROC scores
-            try:
-                c_vs_0_auc = roc_auc_score(c_vs_0_true.numpy(), c_vs_0_pred.numpy())
-                m_vs_0_auc = roc_auc_score(m_vs_0_true.numpy(), m_vs_0_pred.numpy())
-                
-                self.log('val/c_vs_0_auc', c_vs_0_auc, sync_dist=True)
-                self.log('val/m_vs_0_auc', m_vs_0_auc, sync_dist=True)
-            except Exception as e:
-                self.print(f"Error computing AUC: {e}")
-    
-    def test_step(self, batch, batch_idx):
-        """
-        Test step (identical to validation step)
-        
-        Args:
-            batch: Batch of data
-            batch_idx: Batch index
-            
-        Returns:
-            Dictionary of test metrics
-        """
-        return self.validation_step(batch, batch_idx)
-    
-    def test_epoch_end(self, outputs):
-        """
-        Compute test metrics at the end of epoch
-        
-        Args:
-            outputs: List of outputs from test_step
-        """
-        # Similar to validation_epoch_end but for test set
-        self.validation_epoch_end(outputs)
-        
-        # Additional test metrics could be implemented here
-        
     def predict_step(self, batch, batch_idx):
         """
         Prediction step
@@ -607,10 +713,14 @@ def train(args):
     pl.seed_everything(args.seed)
     
     # Configure mixed precision
+    # Enable mixed precision if requested, falling back to full precision otherwise
+    precision = 32
     if args.mixed_precision:
-        precision = 16
-    else:
-        precision = 32
+        if torch.cuda.is_available():
+            precision = 16
+            print("Using mixed precision (16-bit) with CUDA")
+        else:
+            print("Mixed precision requested but requires CUDA GPU - using 32-bit precision instead")
     
     # Create data loaders
     data_loaders = get_data_loaders(
@@ -665,10 +775,13 @@ def train(args):
     )
     
     # Create trainer
+    # Auto-detect the best available accelerator
+    accelerator = 'auto'  # Let PyTorch Lightning automatically select the best accelerator
+    
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
-        accelerator='auto',
-        devices='auto',
+        accelerator=accelerator,
+        devices=1,
         precision=precision,
         callbacks=callbacks,
         logger=logger,
@@ -713,7 +826,7 @@ def main():
     # Model configuration
     parser.add_argument('--magnetogram_channels', type=int, default=1,
                         help='Number of magnetogram channels')
-    parser.add_argument('--euv_channels', type=int, default=7,
+    parser.add_argument('--euv_channels', type=int, default=8,
                         help='Number of EUV channels')
     parser.add_argument('--pretrained', action='store_true', default=True,
                         help='Whether to use pretrained backbones')

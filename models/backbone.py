@@ -83,7 +83,7 @@ class MultiInputDenseNet(nn.Module):
     """
     def __init__(self,
                  magnetogram_channels: int = 1,
-                 euv_channels: int = 7,
+                 euv_channels: int = 8,
                  pretrained: bool = True,
                  freeze_magnetogram: bool = False,
                  freeze_euv: bool = False):

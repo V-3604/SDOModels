@@ -173,7 +173,7 @@ class SDOBenchmarkDataset(Dataset):
                     magnetogram[i, 0] = torch.from_numpy(img).float() / 255.0 * 2.0 - 1.0
 
             # Load EUV wavelengths
-            wavelengths = ['94', '131', '171', '193', '211', '304', '335', '1700']
+            wavelengths = ['94', '131', '171', '193', '211', '304', '335', '1700']  # Restored '1700' for 8 channels
             for wl_idx, wl in enumerate(wavelengths):
                 euv_files = [f for f in files if f.endswith(f'_{wl}.jpg') or f.endswith(f'_{wl}.jpeg') or f.endswith(f'_{wl}.png')]
                 if euv_files:
@@ -238,8 +238,8 @@ class SDODataPreprocessor:
         # Statistics pre-computed on the training set
         self.magnetogram_mean = 0.0
         self.magnetogram_std = 1.0
-        self.euv_means = [0.2, 0.15, 0.3, 0.25, 0.2, 0.35, 0.15, 0.4]
-        self.euv_stds = [0.2, 0.15, 0.2, 0.15, 0.15, 0.25, 0.1, 0.3]
+        self.euv_means = [0.2, 0.15, 0.3, 0.25, 0.2, 0.35, 0.15, 0.4]  # Restored value for 1700
+        self.euv_stds = [0.2, 0.15, 0.2, 0.15, 0.15, 0.25, 0.1, 0.3]   # Restored value for 1700
     
     def __call__(self, sample):
         """

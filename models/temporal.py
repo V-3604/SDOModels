@@ -13,8 +13,7 @@ class TemporalLSTM(nn.Module):
                  hidden_size: int = 512,
                  num_layers: int = 2,
                  dropout: float = 0.1,
-                 bidirectional: bool = True,
-                 recurrent_dropout: float = 0.2):
+                 bidirectional: bool = True):
         """
         Initialize temporal LSTM
         
@@ -24,7 +23,6 @@ class TemporalLSTM(nn.Module):
             num_layers: Number of LSTM layers
             dropout: Dropout probability
             bidirectional: Whether to use bidirectional LSTM
-            recurrent_dropout: Dropout probability for recurrent connections
         """
         super().__init__()
         
@@ -34,24 +32,38 @@ class TemporalLSTM(nn.Module):
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0,
             bidirectional=bidirectional,
-            batch_first=True,
-            recurrent_dropout=recurrent_dropout
+            batch_first=True
         )
+        
+        # Additional dropout layer for the output
+        self.dropout = nn.Dropout(dropout)
         
         # Output size accounting for bidirectionality
         self.out_channels = hidden_size * 2 if bidirectional else hidden_size
         
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    def forward(self, x: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence]) -> Tuple[Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence], Tuple[torch.Tensor, torch.Tensor]]:
         """
         Forward pass
         
         Args:
-            x: Input tensor of shape (batch_size, time_steps, features)
+            x: Input tensor of shape (batch_size, time_steps, features) or PackedSequence
             
         Returns:
             Tuple of output features and hidden states
         """
-        return self.lstm(x)
+        outputs, hidden = self.lstm(x)
+        
+        # Apply dropout differently based on the type of outputs
+        if isinstance(outputs, torch.nn.utils.rnn.PackedSequence):
+            # For PackedSequence, we need to unpack, apply dropout, and re-pack
+            unpacked, lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs, batch_first=True)
+            unpacked = self.dropout(unpacked)
+            outputs = torch.nn.utils.rnn.pack_padded_sequence(unpacked, lengths, batch_first=True, enforce_sorted=False)
+        else:
+            # For regular tensor
+            outputs = self.dropout(outputs)
+            
+        return outputs, hidden
 
 
 class TemporalGRU(nn.Module):
@@ -63,8 +75,7 @@ class TemporalGRU(nn.Module):
                  hidden_size: int = 512,
                  num_layers: int = 2,
                  dropout: float = 0.1,
-                 bidirectional: bool = True,
-                 recurrent_dropout: float = 0.2):
+                 bidirectional: bool = True):
         """
         Initialize temporal GRU
         
@@ -74,7 +85,6 @@ class TemporalGRU(nn.Module):
             num_layers: Number of GRU layers
             dropout: Dropout probability
             bidirectional: Whether to use bidirectional GRU
-            recurrent_dropout: Dropout probability for recurrent connections
         """
         super().__init__()
         
@@ -84,24 +94,38 @@ class TemporalGRU(nn.Module):
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0,
             bidirectional=bidirectional,
-            batch_first=True,
-            recurrent_dropout=recurrent_dropout
+            batch_first=True
         )
+        
+        # Additional dropout layer for the output
+        self.dropout = nn.Dropout(dropout)
         
         # Output size accounting for bidirectionality
         self.out_channels = hidden_size * 2 if bidirectional else hidden_size
         
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence]) -> Tuple[Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence], torch.Tensor]:
         """
         Forward pass
         
         Args:
-            x: Input tensor of shape (batch_size, time_steps, features)
+            x: Input tensor of shape (batch_size, time_steps, features) or PackedSequence
             
         Returns:
             Tuple of output features and hidden states
         """
-        return self.gru(x)
+        outputs, hidden = self.gru(x)
+        
+        # Apply dropout differently based on the type of outputs
+        if isinstance(outputs, torch.nn.utils.rnn.PackedSequence):
+            # For PackedSequence, we need to unpack, apply dropout, and re-pack
+            unpacked, lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs, batch_first=True)
+            unpacked = self.dropout(unpacked)
+            outputs = torch.nn.utils.rnn.pack_padded_sequence(unpacked, lengths, batch_first=True, enforce_sorted=False)
+        else:
+            # For regular tensor
+            outputs = self.dropout(outputs)
+            
+        return outputs, hidden
 
 
 class PositionalEncoding(nn.Module):
@@ -404,14 +428,12 @@ class SpatioTemporalFusion(nn.Module):
         
         # Create temporal model based on type
         if temporal_type == 'lstm':
-            # Add dropout specifically for recurrent connections (different from regular dropout)
             self.temporal_model = TemporalLSTM(
                 input_size=spatial_channels,
                 hidden_size=hidden_size,
                 num_layers=num_layers,
                 dropout=dropout,
-                bidirectional=bidirectional,
-                recurrent_dropout=0.2  # Add recurrent dropout
+                bidirectional=bidirectional
             )
             # Add temporal attention for focusing on key timesteps
             self.temporal_attention = TemporalAttention(
@@ -424,8 +446,7 @@ class SpatioTemporalFusion(nn.Module):
                 hidden_size=hidden_size,
                 num_layers=num_layers,
                 dropout=dropout,
-                bidirectional=bidirectional,
-                recurrent_dropout=0.2  # Add recurrent dropout
+                bidirectional=bidirectional
             )
             # Add temporal attention for focusing on key timesteps
             self.temporal_attention = TemporalAttention(

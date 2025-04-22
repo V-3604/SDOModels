@@ -101,7 +101,7 @@ class SolarFlareModel(nn.Module):
     """
     def __init__(self,
                  magnetogram_channels: int = 1,
-                 euv_channels: int = 7,
+                 euv_channels: int = 8,
                  pretrained: bool = True,
                  freeze_backbones: bool = False,
                  use_attention: bool = True,

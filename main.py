@@ -57,7 +57,7 @@ def parse_args():
     # Model configuration
     train_parser.add_argument('--magnetogram_channels', type=int, default=1,
                              help='Number of magnetogram channels')
-    train_parser.add_argument('--euv_channels', type=int, default=7,
+    train_parser.add_argument('--euv_channels', type=int, default=8,
                              help='Number of EUV channels')
     train_parser.add_argument('--pretrained', action='store_true', default=True,
                              help='Whether to use pretrained backbones')
@@ -193,7 +193,7 @@ def convert_config_to_args(config, command='train'):
     # Model configuration
     model_config = config.get('model', {})
     args.magnetogram_channels = model_config.get('magnetogram_channels', 1)
-    args.euv_channels = model_config.get('euv_channels', 7)
+    args.euv_channels = model_config.get('euv_channels', 8)
     args.pretrained = model_config.get('pretrained', True)
     args.freeze_backbones = model_config.get('freeze_backbones', False)
     args.use_attention = model_config.get('use_attention', True)
